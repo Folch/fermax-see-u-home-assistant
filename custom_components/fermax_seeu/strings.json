@@ -1,0 +1,164 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fermax See-U Setup",
+        "description": "Scan the QR code from your Fermax See-U device and paste the JSON data below.",
+        "data": {
+          "qr_json": "QR JSON Data"
+        }
+      },
+      "lan": {
+        "title": "Direct LAN Connection",
+        "description": "The videoporter is controlled directly over your local network. Enter its IP and the PIN you set in the Fermax app (the device password — every device has its own).",
+        "data": {
+          "device_ip": "Device IP",
+          "device_pin": "Device PIN",
+          "device_username": "Device username"
+        }
+      },
+      "credentials": {
+        "title": "API Credentials (optional)",
+        "description": "With a direct LAN connection, these are optional and can be left empty. They are only needed for Fermax cloud notifications.",
+        "data": {
+          "fermax_auth_url": "Fermax Auth URL (optional)",
+          "fermax_base_url": "Fermax Base URL (optional)",
+          "fermax_auth_basic": "Fermax Auth Basic header (optional)",
+          "firebase_api_key": "Firebase API Key (optional)",
+          "firebase_sender_id": "Firebase Sender ID (optional)",
+          "firebase_app_id": "Firebase App ID (optional)",
+          "firebase_project_id": "Firebase Project ID (optional)",
+          "firebase_package_name": "Firebase Package Name (optional)"
+        }
+      }
+    },
+    "error": {
+      "invalid_qr_json": "Invalid JSON format. Please check the QR data.",
+      "invalid_qr_fields": "Missing required QR fields (u, a, d, b).",
+      "invalid_url": "Fermax URLs must be valid HTTPS URLs.",
+      "required": "IP and PIN are required.",
+      "cannot_connect": "Cannot reach the videoporter with these IP and PIN. Check them and try again."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fermax See-U Options",
+        "data": {
+          "scan_interval": "Polling interval (minutes)",
+          "recording_retention": "Recording retention (days)",
+          "auto_response_file": "Audio file path for auto-response"
+        }
+      }
+    }
+  },
+  "entity": {
+    "number": {
+      "stream_duration": {
+        "name": "Stream duration"
+      }
+    },
+    "select": {
+      "call_mode": {
+        "name": "Call mode",
+        "state": {
+          "notify_only": "Notify only",
+          "record": "Record",
+          "auto_respond": "Auto-respond"
+        }
+      }
+    },
+    "binary_sensor": {
+      "connection": {
+        "name": "Connection"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Doorbell",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Ring"
+            }
+          }
+        }
+      },
+      "door_opened": {
+        "name": "Door opened",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "door_opened": "Door opened"
+            }
+          }
+        }
+      },
+      "camera_on": {
+        "name": "Camera preview",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "camera_on": "Camera preview"
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "Door"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "Visitor"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "WiFi signal"
+      },
+      "status": {
+        "name": "Status"
+      },
+      "last_opening": {
+        "name": "Last door opening"
+      },
+      "last_call": {
+        "name": "Last call"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "Open door"
+      },
+      "camera_preview": {
+        "name": "Camera preview"
+      },
+      "f1": {
+        "name": "F1 auxiliary"
+      },
+      "call_guard": {
+        "name": "Call guard"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "Doorbell notifications"
+      },
+      "dnd": {
+        "name": "Do not disturb"
+      },
+      "photo_caller": {
+        "name": "Photo caller"
+      },
+      "camera_stream": {
+        "name": "Camera stream"
+      }
+    }
+  }
+}

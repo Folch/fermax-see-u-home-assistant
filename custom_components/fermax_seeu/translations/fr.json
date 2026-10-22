@@ -2,16 +2,16 @@
   "config": {
     "step": {
       "user": {
-        "title": "Login Fermax Blue",
-        "description": "Insira as credenciais da sua conta Fermax Blue.",
+        "title": "Connexion Fermax Blue",
+        "description": "Entrez vos identifiants Fermax Blue.",
         "data": {
           "username": "E-mail",
-          "password": "Senha"
+          "password": "Mot de passe"
         }
       },
       "credentials": {
-        "title": "Credenciais API",
-        "description": "Insira as credenciais de API e Firebase extraídas da sua app Fermax Blue. Consulte a documentação da integração para instruções.",
+        "title": "Identifiants API",
+        "description": "Entrez les identifiants API et Firebase extraits de votre application Fermax Blue. Consultez la documentation de l'intégration pour les instructions.",
         "data": {
           "fermax_auth_url": "Fermax Auth URL",
           "fermax_base_url": "Fermax Base URL",
@@ -25,23 +25,22 @@
       }
     },
     "error": {
-      "invalid_auth": "Credenciais inválidas. Verifique seu e-mail e senha.",
-      "invalid_url": "Os URLs Fermax devem ser URLs HTTPS válidos.",
-      "cannot_connect": "Não foi possível conectar aos servidores Fermax Blue.",
-      "no_devices": "Nenhum dispositivo vinculado encontrado nesta conta."
+      "invalid_auth": "Identifiants invalides. Vérifiez votre e-mail et mot de passe.",
+      "invalid_url": "Les URL Fermax doivent être des URL HTTPS valides.",
+      "no_devices": "Aucun appareil associé trouvé sur ce compte."
     },
     "abort": {
-      "already_configured": "Esta conta já está configurada."
+      "already_configured": "Ce compte est déjà configuré."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Opções Fermax Blue",
+        "title": "Options Fermax Blue",
         "data": {
-          "scan_interval": "Intervalo de consulta (minutos)",
-          "recording_retention": "Retenção de gravações (dias)",
-          "auto_response_file": "Caminho do arquivo de áudio"
+          "scan_interval": "Intervalle d'interrogation (minutes)",
+          "recording_retention": "Rétention des enregistrements (jours)",
+          "auto_response_file": "Chemin du fichier audio"
         }
       }
     }
@@ -49,51 +48,51 @@
   "entity": {
     "number": {
       "stream_duration": {
-        "name": "Duração do stream"
+        "name": "Durée du flux"
       }
     },
     "select": {
       "call_mode": {
-        "name": "Modo de chamada",
+        "name": "Mode d'appel",
         "state": {
-          "notify_only": "Apenas notificar",
-          "record": "Gravar",
-          "auto_respond": "Resposta automática"
+          "notify_only": "Notification uniquement",
+          "record": "Enregistrer",
+          "auto_respond": "Réponse auto"
         }
       }
     },
     "binary_sensor": {
       "connection": {
-        "name": "Conexão"
+        "name": "Connexion"
       }
     },
     "event": {
       "doorbell": {
-        "name": "Campainha",
+        "name": "Sonnette",
         "state_attributes": {
           "event_type": {
             "state": {
-              "ring": "Toque"
+              "ring": "Sonnerie"
             }
           }
         }
       },
       "door_opened": {
-        "name": "Porta aberta",
+        "name": "Porte ouverte",
         "state_attributes": {
           "event_type": {
             "state": {
-              "door_opened": "Porta aberta"
+              "door_opened": "Porte ouverte"
             }
           }
         }
       },
       "camera_on": {
-        "name": "Pré-visualização",
+        "name": "Aperçu caméra",
         "state_attributes": {
           "event_type": {
             "state": {
-              "camera_on": "Pré-visualização"
+              "camera_on": "Aperçu caméra"
             }
           }
         }
@@ -101,51 +100,51 @@
     },
     "lock": {
       "door": {
-        "name": "Porta"
+        "name": "Porte"
       }
     },
     "camera": {
       "visitor": {
-        "name": "Visitante"
+        "name": "Visiteur"
       }
     },
     "sensor": {
       "wifi_signal": {
-        "name": "Sinal WiFi"
+        "name": "Signal WiFi"
       },
       "status": {
-        "name": "Estado"
+        "name": "État"
       },
       "last_opening": {
-        "name": "Última abertura"
+        "name": "Dernière ouverture"
       },
       "last_call": {
-        "name": "Última chamada"
+        "name": "Dernier appel"
       }
     },
     "button": {
       "open_door": {
-        "name": "Abrir porta"
+        "name": "Ouvrir la porte"
       },
       "camera_preview": {
-        "name": "Pré-visualização da câmera"
+        "name": "Aperçu caméra"
       },
       "f1": {
-        "name": "F1 auxiliar"
+        "name": "F1 auxiliaire"
       },
       "call_guard": {
-        "name": "Chamar porteiro"
+        "name": "Appeler le gardien"
       }
     },
     "switch": {
       "notifications": {
-        "name": "Notificações da campainha"
+        "name": "Notifications sonnette"
       },
       "dnd": {
-        "name": "Não perturbar"
+        "name": "Ne pas déranger"
       },
       "photo_caller": {
-        "name": "Foto do visitante"
+        "name": "Photo visiteur"
       }
     }
   }

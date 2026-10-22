@@ -32,9 +32,11 @@ from .const import (
     CALL_MODE_NOTIFY,
     DEFAULT_STREAM_DURATION,
     DOMAIN,
+    MIN_STREAM_DURATION,
     RECORDINGS_DIR,
     SIGNAL_CALL_ENDED,
     SIGNAL_CAMERA_ON,
+    SIGNAL_DIRECT_STREAM_CHANGED,
     SIGNAL_DOOR_OPENED,
     SIGNAL_DOORBELL_RING,
 )
@@ -45,6 +47,12 @@ _LOGGER = logging.getLogger(__name__)
 
 DOORBELL_RESET_SECONDS = 30
 CAMERA_TIMEOUT_SECONDS = 90
+# Direct-LAN stream is ON DEMAND: the videoporter only accepts ONE viewer at a
+# time, so HA must not hold the stream when nobody is watching (or the phone
+# app loses access). These bound how long it stays up after a button press /
+# after the last camera viewer leaves.
+DIRECT_STREAM_TIMEOUT = 120
+DIRECT_STREAM_VIEWER_GRACE = 8
 # FCM re-delivers recent notifications when the listener reconnects after a
 # reload/restart, causing phantom doorbell rings. Ignore them briefly.
 NOTIFICATION_GRACE_PERIOD = 10
@@ -96,6 +104,10 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._last_call: CallLogEntry | None = None
         self._call_log: list[CallLogEntry] = []
         self._stream_session: FermaxStreamSession | None = None
+        self._direct_stream = None  # SeeuDirectStream (direct LAN, See-U)
+        self._direct_viewers = 0
+        self._direct_manual = False  # set when the user toggled the stream switch
+        self._direct_stop_unsub: CALLBACK_TYPE | None = None
         self._storage_path: Path | None = None
         self._auto_response_file = auto_response_file
         self._call_mode = CALL_MODE_NOTIFY
@@ -204,6 +216,21 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         """Return the active stream session, if any."""
         return self._stream_session
 
+    @property
+    def direct_stream(self):
+        """Return the persistent direct-LAN stream session (See-U), if any."""
+        return self._direct_stream
+
+    def _notify_direct_stream_changed(self) -> None:
+        """Dispatch the stream-changed signal safely from any thread.
+
+        async_dispatcher_send must only run on the event loop. The direct
+        stream may change from a worker thread (its own session thread), so we
+        hop to the loop with call_soon_threadsafe.
+        """
+        signal = SIGNAL_DIRECT_STREAM_CHANGED.format(self.pairing.device_id)
+        self.hass.loop.call_soon_threadsafe(async_dispatcher_send, self.hass, signal)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the API.
 
@@ -220,44 +247,49 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
         self.device_info = device_info
 
-        # Fetch call log if FCM token is available
-        if self.notification_listener and self.notification_listener.fcm_token:
+        # In direct-LAN mode (See-U) the cloud API is not available and these
+        # fetches would only trigger failed OAuth attempts — skip them.
+        direct_mode = bool(getattr(self.api, "_device_ip", None))
+
+        if not direct_mode:
+            # Fetch call log if FCM token is available
+            if self.notification_listener and self.notification_listener.fcm_token:
+                try:
+                    call_log = await self.api.get_call_log(self.notification_listener.fcm_token)
+                    self._call_log = call_log
+                    if call_log:
+                        self._last_call = max(call_log, key=lambda c: c.call_date)
+
+                        # Fetch photo only after a doorbell ring
+                        if self._photo_fetch_pending:
+                            self._photo_fetch_pending = False
+                            latest = self._last_call
+                            if latest.photo_id and latest.photo_id != self._last_photo_id:
+                                photo = await self.api.get_call_photo(latest.photo_id)
+                                if photo:
+                                    self._last_photo = photo
+                                    self._last_photo_id = latest.photo_id
+                                    self.hass.async_create_task(self._save_call_photo(photo))
+                except Exception:
+                    _LOGGER.debug("Failed to fetch call log/photo", exc_info=True)
+
+            # Fetch DND status
+            if self.notification_listener and self.notification_listener.fcm_token:
+                try:
+                    self._dnd_enabled = await self.api.get_dnd_status(
+                        self.pairing.device_id,
+                        self.notification_listener.fcm_token,
+                    )
+                except Exception:
+                    _LOGGER.debug("Failed to fetch DND status", exc_info=True)
+
+            # Fetch latest door opening (1 API call, lightweight)
             try:
-                call_log = await self.api.get_call_log(self.notification_listener.fcm_token)
-                self._call_log = call_log
-                if call_log:
-                    self._last_call = max(call_log, key=lambda c: c.call_date)
-
-                    # Fetch photo only after a doorbell ring
-                    if self._photo_fetch_pending:
-                        self._photo_fetch_pending = False
-                        latest = self._last_call
-                        if latest.photo_id and latest.photo_id != self._last_photo_id:
-                            photo = await self.api.get_call_photo(latest.photo_id)
-                            if photo:
-                                self._last_photo = photo
-                                self._last_photo_id = latest.photo_id
-                                self.hass.async_create_task(self._save_call_photo(photo))
+                openings = await self.api.get_opening_history(self.pairing.device_id)
+                if openings:
+                    self._last_opening = openings[0]
             except Exception:
-                _LOGGER.debug("Failed to fetch call log/photo", exc_info=True)
-
-        # Fetch DND status
-        if self.notification_listener and self.notification_listener.fcm_token:
-            try:
-                self._dnd_enabled = await self.api.get_dnd_status(
-                    self.pairing.device_id,
-                    self.notification_listener.fcm_token,
-                )
-            except Exception:
-                _LOGGER.debug("Failed to fetch DND status", exc_info=True)
-
-        # Fetch latest door opening (1 API call, lightweight)
-        try:
-            openings = await self.api.get_opening_history(self.pairing.device_id)
-            if openings:
-                self._last_opening = openings[0]
-        except Exception:
-            _LOGGER.debug("Failed to fetch opening history", exc_info=True)
+                _LOGGER.debug("Failed to fetch opening history", exc_info=True)
 
         return {
             "device_id": device_info.device_id,
@@ -289,7 +321,17 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         # Load persisted last photo for camera preview
         await self._load_last_photo()
 
-        fcm_token = await self.notification_listener.register()
+        try:
+            fcm_token = await self.notification_listener.register()
+        except Exception as err:
+            _LOGGER.error(
+                "FCM registration failed — doorbell push notifications are "
+                "disabled, but the rest of the integration keeps working: %s",
+                err,
+            )
+            self.notification_listener = None
+            return
+
         if fcm_token:
             await self.api.register_app_token(fcm_token, active=True)
             self._notification_start_time = time.monotonic()
@@ -443,8 +485,146 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
         return success
 
+    async def start_direct_stream(self, manual: bool = False) -> bool:
+        """Start the persistent direct-LAN QUII stream session.
+
+        Opens ONE connection to the videoporter and decodes H.264 → JPEG
+        continuously (~20 fps) — no cloud, no FCM token needed.
+
+        ``manual=True`` (the "Camera stream" switch) keeps the stream up until
+        the user turns it off — the auto-stop timeout is skipped.
+        """
+        api = self.api
+        if not getattr(api, "_device_ip", None):
+            return False
+        # Idempotent: already streaming → nothing to do.
+        if self._direct_stream and self._direct_stream.is_active:
+            if manual:
+                self._direct_manual = True
+            return True
+        # The H.264→JPEG decode needs PyAV; fail loudly if it's missing so the
+        # "no camera image" case is obvious instead of silent.
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            _LOGGER.error(
+                "PyAV (av) is not installed — the direct camera cannot decode "
+                "the videoporter stream. Restart Home Assistant so the declared "
+                "requirement av>=13.0.0 gets installed."
+            )
+            return False
+        try:
+            if not getattr(api, "_stream_key", ""):
+                await api.get_stream_key_direct()
+            from .direct_camera import CameraConfig, SeeuDirectStream
+
+            cfg = CameraConfig(
+                ip=api._device_ip,
+                username=getattr(api, "_device_username", "adminapp2"),
+                pin=getattr(api, "_device_pin", ""),
+                auth_code=getattr(api, "_qr_auth_code", "") or "",
+                stream_key=getattr(api, "_stream_key", "") or "",
+                client_id=getattr(api, "_client_id", "") or "",
+            )
+            if self._direct_stream:
+                self._direct_stream.stop()
+            stream = SeeuDirectStream(cfg)
+            # When the first frame is decoded the stream is really live — flip
+            # the camera state to "Streaming" at that moment (not before, which
+            # is why it used to show "Idle" while already streaming).
+            stream.on_first_frame = self._notify_direct_stream_changed
+            stream.start()
+            self._direct_stream = stream
+            self._camera_active = True
+            if manual:
+                self._direct_manual = True
+            _LOGGER.info("Direct LAN stream started for %s", api._device_ip)
+            self._notify_direct_stream_changed()
+            # Bound its lifetime so the videoporter is freed for the phone app
+            # if nobody actually watches the camera — UNLESS the user explicitly
+            # turned the stream on via the "Camera stream" switch. The timeout
+            # is the configured "Stream duration" (number entity, 10–120s).
+            if not self._direct_manual:
+                timeout = max(MIN_STREAM_DURATION, int(self._stream_duration))
+                self._schedule_direct_stop(timeout)
+            return True
+        except Exception:
+            _LOGGER.error("Failed to start direct LAN stream", exc_info=True)
+            return False
+
+    def direct_viewer_started(self) -> None:
+        """A camera viewer (MJPEG consumer) began watching — keep the stream up."""
+        self._direct_viewers += 1
+        if self._direct_stop_unsub:
+            self._direct_stop_unsub()
+            self._direct_stop_unsub = None
+
+    def direct_viewer_ended(self) -> None:
+        """A camera viewer left; free the videoporter once the last one goes."""
+        self._direct_viewers = max(0, self._direct_viewers - 1)
+        if self._direct_viewers == 0:
+            self._schedule_direct_stop(DIRECT_STREAM_VIEWER_GRACE)
+
+    def _schedule_direct_stop(self, delay: float) -> None:
+        """Schedule stopping the direct stream after ``delay`` seconds."""
+        if self._direct_manual:
+            return  # user explicitly turned the stream on — keep it up
+        if self._direct_stop_unsub:
+            return  # already scheduled
+
+        @callback
+        def _do_stop(_now: Any) -> None:
+            self._direct_stop_unsub = None
+            # Only stop if nobody started watching again in the meantime.
+            if self._direct_viewers == 0 and self._direct_stream is not None:
+                self.hass.async_create_task(self.stop_direct_stream())
+
+        self._direct_stop_unsub = async_call_later(self.hass, delay, _do_stop)
+
+    async def stop_direct_stream(self) -> None:
+        """Stop the persistent direct-LAN stream session."""
+        if self._direct_stop_unsub:
+            self._direct_stop_unsub()
+            self._direct_stop_unsub = None
+        self._direct_viewers = 0
+        self._direct_manual = False
+        stream = self._direct_stream
+        self._direct_stream = None
+        if stream is not None:
+            stream.stop()
+            _LOGGER.info("Direct LAN stream stopped — videoporter freed")
+        self._notify_direct_stream_changed()
+        self._camera_active = False
+
     async def start_camera_preview(self) -> DivertResponse | None:
-        """Start camera preview (auto-on) to view the intercom camera."""
+        """Start camera preview (auto-on) to view the intercom camera.
+
+        For a direct LAN connection (See-U) this starts the persistent QUII
+        stream — no cloud/FCM/pymediasoup needed.
+        """
+        if getattr(self.api, "_device_ip", None):
+            # Toggle: pressing while already streaming stops it, so the user
+            # can free the videoporter for the phone app from the same button.
+            if self._direct_stream and self._direct_stream.is_active:
+                await self.stop_direct_stream()
+                return DivertResponse(
+                    reason="direct",
+                    divert_service="lan",
+                    code=0,
+                    description="Direct LAN stream stopped",
+                    directed_to=self.api._device_ip or "",
+                )
+            ok = await self.start_direct_stream()
+            if ok:
+                return DivertResponse(
+                    reason="direct",
+                    divert_service="lan",
+                    code=0,
+                    description="Direct LAN stream started",
+                    directed_to=self.api._device_ip or "",
+                )
+            return None
+
         if not self.notification_listener or not self.notification_listener.fcm_token:
             _LOGGER.error("Cannot start camera: no FCM token available")
             return None
@@ -600,7 +780,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Auto-response sent: %s", self._auto_response_file)
 
     async def stop_stream(self) -> None:
-        """Stop the current video stream session."""
+        """Stop the current video stream session (cloud and/or direct)."""
+        await self.stop_direct_stream()
         if self._stream_session:
             # Save last frame before stopping (stop() may clear internal state)
             if self._stream_session.latest_frame:

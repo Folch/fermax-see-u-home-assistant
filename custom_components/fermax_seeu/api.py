@@ -128,6 +128,30 @@ class OpeningRecord:
     guest_email: str | None = None
 
 
+def _parse_device_status_xml(xml_text: str) -> dict[str, Any]:
+    """Parse a get.device.status response into a dict."""
+    result: dict[str, Any] = {}
+    mac = re.search(r"<mac>([^<]+)</mac>", xml_text)
+    model = re.search(r"<model>([^<]+)</model>", xml_text)
+    version = re.search(r"<version>([^<]+)</version>", xml_text)
+    video = re.search(r"<vionoff>\s*<value>([^<]+)</value>", xml_text)
+    timezone = re.search(r"<timezone>([^<]+)</timezone>", xml_text)
+    error = re.search(r"<error>([^<]+)</error>", xml_text)
+    if error:
+        result["error"] = error.group(1)
+    if mac:
+        result["mac"] = mac.group(1)
+    if model:
+        result["model"] = model.group(1)
+    if version:
+        result["version"] = version.group(1)
+    if video:
+        result["video_on"] = video.group(1) == "video_on"
+    if timezone:
+        result["timezone"] = timezone.group(1)
+    return result
+
+
 def _is_retryable(exc: Exception) -> bool:
     """Return True if the exception is transient and worth retrying."""
     if isinstance(exc, httpx.ConnectError | httpx.TimeoutException):
@@ -144,20 +168,48 @@ class FermaxApiError(Exception):
 
 
 class FermaxBlueApi:
-    """Client for the Fermax Blue API."""
+    """Client for the Fermax Blue/See-U API."""
 
     def __init__(
         self,
-        username: str,
-        password: str,
+        username: str | None = None,
+        password: str | None = None,
         client: httpx.AsyncClient | None = None,
         *,
         auth_url: str,
         base_url: str,
         auth_basic: str,
+        qr_user_id: str | None = None,
+        qr_account_id: str | None = None,
+        qr_device_id: str | None = None,
+        qr_mac: str | None = None,
+        qr_auth_code: str | None = None,
+        device_ip: str | None = None,
+        device_pin: str | None = None,
+        device_username: str = "adminapp2",
+        stream_key: str | None = None,
+        client_id: str | None = None,
     ) -> None:
-        self._username = username
-        self._password = password
+        """Initialize Fermax API client.
+
+        For Fermax Blue: provide username and password.
+        For Fermax See-U: provide QR parameters (qr_user_id, qr_account_id, etc.)
+        plus the direct LAN connection details (device_ip, device_pin).
+        """
+        self._username = username or ""
+        self._password = password or ""
+        self._qr_user_id = qr_user_id
+        self._qr_account_id = qr_account_id
+        self._qr_device_id = qr_device_id
+        self._qr_mac = qr_mac
+        self._qr_auth_code = qr_auth_code
+        self._device_ip = device_ip
+        self._device_pin = device_pin or ""
+        self._device_username = device_username or "adminapp2"
+        self._stream_key = stream_key or ""
+        # Default clientid of the videoporter (002-4112-{hex32}); the device
+        # accepts this value in the QUII play packet.
+        self._client_id = client_id or "002-4112-7F950C009611492F8C4D9D73FBC56215"
         self._access_token: str | None = None
         self._token_expires_at: float = 0
         self._auth_url = auth_url
@@ -166,6 +218,7 @@ class FermaxBlueApi:
 
         self._client = client
         self._owns_client = client is None
+        self._device_client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create a persistent HTTP client."""
@@ -179,6 +232,103 @@ class FermaxBlueApi:
         if self._owns_client and self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
+        if self._device_client and not self._device_client.is_closed:
+            await self._device_client.aclose()
+            self._device_client = None
+
+    # ------------------------------------------------------------------
+    # Direct LAN (CGI) connection for Fermax See-U
+    # ------------------------------------------------------------------
+
+    def _device_cgi_url(self) -> str:
+        """Return the device CGI URL."""
+        if not self._device_ip:
+            raise FermaxApiError("No device IP configured for direct connection")
+        return f"https://{self._device_ip}/tdkcgi"
+
+    def _device_pwd_hash(self) -> str:
+        """SHA256 hash of the device PIN."""
+        import hashlib
+
+        return hashlib.sha256(self._device_pin.encode("utf-8")).hexdigest()
+
+    def _build_device_xml(self, command: str, content: str = "") -> str:
+        """Build a device CGI XML request."""
+        pwd_hash = self._device_pwd_hash()
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<envelope>\n"
+            "  <header>\n"
+            "    <security>username</security>\n"
+            f"    <username>{self._device_username}</username>\n"
+            f"    <password>{pwd_hash}</password>\n"
+            "    <passwordencode>1</passwordencode>\n"
+            "  </header>\n"
+            "  <body>\n"
+            f"    <command>{command}</command>\n"
+            f"    <content>{content}</content>\n"
+            "  </body>\n"
+            "</envelope>"
+        )
+
+    async def _device_cgi(self, command: str, content: str = "") -> httpx.Response:
+        """Send a CGI command directly to the videoporter.
+
+        Uses a dedicated client with TLS verification disabled because the
+        device serves a self-signed certificate with a weak key.
+        """
+        xml = self._build_device_xml(command, content)
+        headers = {
+            "Content-Type": "application/xml",
+            "charset": "utf-8",
+            "Accept": "application/xml",
+        }
+        if self._device_client is None or self._device_client.is_closed:
+            self._device_client = httpx.AsyncClient(
+                timeout=API_TIMEOUT, verify=False
+            )
+        response = await self._device_client.post(
+            self._device_cgi_url(), headers=headers, content=xml
+        )
+        response.raise_for_status()
+        return response
+
+    async def get_device_status_direct(self) -> dict[str, Any]:
+        """Query get.device.status directly on the LAN device."""
+        resp = await self._device_cgi("get.device.status")
+        return _parse_device_status_xml(resp.text)
+
+    async def open_door_direct(self) -> bool:
+        """Open the door directly on the LAN device via CGI."""
+        pwd_hash = self._device_pwd_hash()
+        content = f"<door>1</door><locknumber>1</locknumber><password>{pwd_hash}</password>"
+        try:
+            resp = await self._device_cgi("set.device.opendoor", content)
+            return "<error>0</error>" in resp.text
+        except httpx.HTTPStatusError:
+            return False
+
+    async def get_stream_key_direct(self) -> str:
+        """Fetch the QUII stream key (<key>) from the device and cache it.
+
+        The <key> is the AES-256 key for the media stream on port 34567.
+        Returns the key; also stores it in self._stream_key.
+        """
+        if self._stream_key:
+            return self._stream_key
+        try:
+            resp = await self._device_cgi("get.device.streamkey")
+            import re as _re
+
+            key_match = _re.search(r"<key>(.*?)</key>", resp.text)
+            if not key_match or not key_match.group(1):
+                raise FermaxApiError("get.device.streamkey returned no <key>")
+            self._stream_key = key_match.group(1)
+            _LOGGER.debug("Fetched QUII stream key from %s", self._device_ip)
+        except Exception as err:
+            _LOGGER.warning("Failed to fetch stream key from device: %s", err)
+            raise FermaxApiError("Could not fetch device stream key") from err
+        return self._stream_key
 
     @property
     def is_authenticated(self) -> bool:
@@ -214,27 +364,106 @@ class FermaxBlueApi:
 
     def _get_auth_headers(self) -> dict:
         """Get headers for authenticated API requests."""
-        return {
+        headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
             **APP_HEADERS,
         }
+        
+        # Donem context al token genèric afegint les dades del QR a les capçaleres
+        if self._qr_user_id:
+            headers["userId"] = self._qr_user_id
+            headers["X-User-Id"] = self._qr_user_id
+        if self._qr_account_id:
+            headers["accountId"] = self._qr_account_id
+            headers["X-Account-Id"] = self._qr_account_id
+            
+        return headers
 
     async def authenticate(self) -> str:
-        """Authenticate with Fermax Blue and return access token."""
+        """Authenticate with Fermax Blue/See-U and return access token."""
+        
+        # 1. Assegurem el format de la capçalera (es necessita per password grant)
+        auth_header = self._auth_basic
+        if not auth_header.startswith("Basic "):
+            auth_header = f"Basic {auth_header}"
+
+        # Check if this is See-U (QR-based)
+        if self._qr_user_id:
+            _LOGGER.debug(
+                "Fermax See-U: Autenticant amb grant_type=password. "
+                "User ID: %s, Account ID: %s", self._qr_user_id, self._qr_account_id
+            )
+
+            # Password is the configured device PIN (from config, not hardcoded).
+            qr_password = self._device_pin
+
+            headers = {
+                "Authorization": auth_header,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "userId": self._qr_user_id,
+                "X-User-Id": self._qr_user_id,
+                **APP_HEADERS,
+            }
+            if self._qr_account_id:
+                headers["accountId"] = self._qr_account_id
+                headers["X-Account-Id"] = self._qr_account_id
+
+            # Send the QR user (u) and the configured PIN.
+            payload = f"grant_type=password&password={qr_password}&username={self._qr_user_id}"
+            
+            client = await self._get_client()
+            
+            auth_endpoint = f"{self._auth_url}/oauth/token"
+            if self._auth_url.endswith("/oauth/token"): 
+                auth_endpoint = self._auth_url
+                
+            response = await client.post(
+                auth_endpoint,
+                headers=headers,
+                content=payload,
+            )
+            
+            if response.status_code >= 400:
+                _LOGGER.warning(
+                    "Fermax See-U OAuth failed: status=%s body=%s",
+                    response.status_code,
+                    self._safe_auth_response_body(response),
+                )
+                raise FermaxAuthError(
+                    f"Fermax See-U OAuth failed with HTTP {response.status_code}"
+                )
+            
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise FermaxApiError(
+                    "Fermax See-U OAuth returned non-JSON response"
+                ) from exc
+            
+            if "access_token" not in data:
+                raise FermaxApiError(
+                    "Fermax See-U OAuth response did not include access_token"
+                )
+            
+            self._access_token = data["access_token"]
+            self._token_expires_at = time.time() + data.get("expires_in", 3600) - 60
+            _LOGGER.debug("Authenticated with Fermax See-U (Token OK!)")
+            return self._access_token
+            
         username = quote(self._username)
         password = quote(self._password)
         payload = f"grant_type=password&password={password}&username={username}"
 
         headers = {
-            "Authorization": self._auth_basic,
+            "Authorization": auth_header,
             "Content-Type": "application/x-www-form-urlencoded",
             **APP_HEADERS,
         }
 
         client = await self._get_client()
         response = await client.post(self._auth_url, headers=headers, content=payload)
-
+        
         content_type = response.headers.get("content-type", "unknown")
         try:
             data = response.json()
@@ -355,11 +584,64 @@ class FermaxBlueApi:
         return await self._api_request("put", path, **kwargs)
 
     async def get_pairings(self) -> list[Pairing]:
-        """Get all paired devices."""
-        response = await self._api_get("/pairing/api/v4/pairings/me")
-        pairings = []
+        """Get all paired devices.
 
-        for item in response.json():
+        For See-U with a direct LAN connection (device_ip configured),
+        build the pairing from the QR data without contacting the cloud.
+        """
+        if self._device_ip:
+            _LOGGER.debug(
+                "See-U direct connection: building pairing from QR data (device_ip=%s)",
+                self._device_ip,
+            )
+            default_door = AccessDoor(
+                name="Door 1",
+                title="Porta Principal",
+                access_id={"id": 0},
+                visible=True,
+            )
+            return [
+                Pairing(
+                    device_id=self._qr_device_id or self._device_ip,
+                    tag="Fermax See-U",
+                    installation_id=self._qr_account_id or "",
+                    access_doors={"Door 1": default_door},
+                )
+            ]
+
+        try:
+            response = await self._api_get("/pairing/api/v4/pairings/me")
+            data = response.json()
+        except httpx.HTTPStatusError as exc:
+            # Si l'API rebutja el /me (típic en See-U amb client_credentials)
+            # i tenim el device_id del QR, fem un "fallback" manual per no bloquejar l'inici.
+            if exc.response.status_code in (401, 403) and self._qr_device_id:
+                _LOGGER.warning(
+                    "El endpoint /me ha donat 401/403. "
+                    "Generant Pairing manual a partir de les dades del QR per See-U."
+                )
+                
+                # Creem una porta per defecte (Ajusta l'access_id si en provar d'obrir la porta et falla)
+                default_door = AccessDoor(
+                    name="Door 1",
+                    title="Porta Principal",
+                    access_id={"id": 0}, 
+                    visible=True
+                )
+                
+                return [
+                    Pairing(
+                        device_id=self._qr_device_id,
+                        tag="Fermax See-U",
+                        installation_id=self._qr_account_id or "",
+                        access_doors={"Door 1": default_door}
+                    )
+                ]
+            # Si l'error és un altre, tornem a llançar l'excepció
+            raise
+
+        pairings = []
+        for item in data:
             access_doors = {}
             for door_name, door_data in item.get("accessDoorMap", {}).items():
                 access_doors[door_name] = AccessDoor(
@@ -381,7 +663,30 @@ class FermaxBlueApi:
         return pairings
 
     async def get_device_info(self, device_id: str) -> DeviceInfo:
-        """Get device information."""
+        """Get device information.
+
+        For See-U direct connection, query the device over the LAN CGI.
+        Otherwise fall back to the cloud API.
+        """
+        if self._device_ip:
+            status = await self.get_device_status_direct()
+            video_on = status.get("video_on", True)
+            is_error = "error" in status and status.get("error") not in (None, "", "0")
+            return DeviceInfo(
+                device_id=self._qr_device_id or device_id,
+                # "Connected" is what FermaxBlueEntity.available checks for.
+                connection_state="Connected" if not is_error else "Disconnected",
+                status="online" if not is_error else "offline",
+                family="See-U",
+                device_type=status.get("model", "Unknown"),
+                subtype="",
+                unit_number=1,
+                photocaller=False,
+                streaming_mode="direct" if video_on else "",
+                is_monitor=False,
+                wireless_signal=0,
+            )
+
         response = await self._api_get(f"/deviceaction/api/v1/device/{device_id}")
         data = response.json()
 
@@ -400,7 +705,13 @@ class FermaxBlueApi:
         )
 
     async def open_door(self, device_id: str, access_id: dict) -> bool:
-        """Open a door."""
+        """Open a door.
+
+        For See-U direct connection, send the CGI opendoor command to the
+        device over the LAN. Otherwise use the cloud API.
+        """
+        if self._device_ip:
+            return await self.open_door_direct()
         try:
             await self._api_post(
                 f"/deviceaction/api/v1/device/{device_id}/directed-opendoor",

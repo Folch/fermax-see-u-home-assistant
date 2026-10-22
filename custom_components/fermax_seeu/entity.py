@@ -33,7 +33,9 @@ class FermaxBlueEntity(CoordinatorEntity[FermaxBlueCoordinator]):
 
         return DeviceInfo(
             identifiers={(DOMAIN, self._device_id)},
-            name=f"Fermax {self.coordinator.pairing.tag}",
+            # pairing.tag is already "Fermax See-U" — do not prepend "Fermax "
+            # again or the device shows as "Fermax Fermax See-U".
+            name=f"{self.coordinator.pairing.tag}" or "Fermax See-U",
             manufacturer=MANUFACTURER,
             model=model,
             sw_version=None,

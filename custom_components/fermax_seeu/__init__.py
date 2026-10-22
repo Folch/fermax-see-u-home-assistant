@@ -1,4 +1,4 @@
-"""The Fermax Blue integration."""
+"""The Fermax See-U integration."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ from homeassistant.helpers.httpx_client import create_async_httpx_client
 
 from .api import FermaxBlueApi
 from .const import (
+    CONF_DEVICE_IP,
+    CONF_DEVICE_PIN,
+    CONF_DEVICE_USERNAME,
     CONF_FERMAX_AUTH_BASIC,
     CONF_FERMAX_AUTH_URL,
     CONF_FERMAX_BASE_URL,
@@ -27,6 +30,11 @@ from .const import (
     CONF_FIREBASE_PACKAGE_NAME,
     CONF_FIREBASE_PROJECT_ID,
     CONF_FIREBASE_SENDER_ID,
+    CONF_QR_ACCOUNT_ID,
+    CONF_QR_DEVICE_ID,
+    CONF_QR_MAC,
+    CONF_QR_CODE,
+    CONF_QR_USER_ID,
     CONF_RECORDING_RETENTION,
     CONF_SCAN_INTERVAL,
     DEFAULT_RECORDING_RETENTION,
@@ -62,18 +70,18 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
       1 — Original format: only username + password (credentials were hardcoded).
       2 — API URL, auth basic, and Firebase credentials are now supplied by the user.
     """
-    _LOGGER.debug("Migrating Fermax Blue config entry from version %s", config_entry.version)
+    _LOGGER.debug("Migrating Fermax See-U config entry from version %s", config_entry.version)
 
     if config_entry.version < 2:
         # If the entry already has all v2 fields (added manually before the
         # VERSION bump existed), just promote it to v2.
         if _V2_REQUIRED_KEYS.issubset(config_entry.data.keys()):
             hass.config_entries.async_update_entry(config_entry, version=2)
-            _LOGGER.info("Fermax Blue config entry migrated to version 2 (fields already present)")
+            _LOGGER.info("Fermax See-U config entry migrated to version 2 (fields already present)")
             return True
 
         _LOGGER.error(
-            "Fermax Blue config entry (version %s) cannot be automatically migrated to "
+            "Fermax See-U config entry (version %s) cannot be automatically migrated to "
             "version 2. The integration now requires API and Firebase credentials that "
             "must be supplied manually (run extract_credentials.py to obtain them). "
             "Please delete this integration entry and re-add it.",
@@ -85,32 +93,58 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -> bool:
-    """Set up Fermax Blue from a config entry."""
+    """Set up Fermax See-U from a config entry."""
     client = create_async_httpx_client(hass)
+    
+    # Support both Blue (username/password) and See-U (QR parameters)
     api = FermaxBlueApi(
-        entry.data[CONF_USERNAME],
-        entry.data[CONF_PASSWORD],
+        entry.data.get("username", ""),
+        entry.data.get("password", ""),
         client=client,
         auth_url=entry.data[CONF_FERMAX_AUTH_URL],
         base_url=entry.data[CONF_FERMAX_BASE_URL],
         auth_basic=entry.data[CONF_FERMAX_AUTH_BASIC],
+        # See-U QR parameters
+        qr_user_id=entry.data.get(CONF_QR_USER_ID),
+        qr_account_id=entry.data.get(CONF_QR_ACCOUNT_ID),
+        qr_device_id=entry.data.get(CONF_QR_DEVICE_ID),
+        qr_mac=entry.data.get(CONF_QR_MAC),
+        qr_auth_code=entry.data.get(CONF_QR_CODE),
+        # See-U direct LAN connection
+        device_ip=entry.data.get(CONF_DEVICE_IP),
+        device_pin=entry.data.get(CONF_DEVICE_PIN),
+        device_username=entry.data.get(CONF_DEVICE_USERNAME, "adminapp2"),
     )
 
     try:
-        await api.authenticate()
-        pairings = await api.get_pairings()
+        if api._device_ip:
+            # Direct LAN connection: no cloud auth needed
+            _LOGGER.info(
+                "Fermax See-U direct connection: device_ip=%s (skipping cloud OAuth)",
+                api._device_ip,
+            )
+            pairings = await api.get_pairings()
+        else:
+            await api.authenticate()
+            pairings = await api.get_pairings()
     except Exception as err:
         await api.close()
         raise ConfigEntryNotReady(f"Failed to connect to Fermax API: {err}") from err
 
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
     auto_response_file = entry.options.get("auto_response_file", "")
+    _sender_raw = entry.data.get(CONF_FIREBASE_SENDER_ID, "") or ""
+    _sender_id = 0
+    try:
+        _sender_id = int(_sender_raw)
+    except (TypeError, ValueError):
+        _sender_id = 0
     firebase_config: dict[str, str | int] = {
-        "firebase_api_key": entry.data[CONF_FIREBASE_API_KEY],
-        "firebase_sender_id": int(entry.data[CONF_FIREBASE_SENDER_ID]),
-        "firebase_app_id": entry.data[CONF_FIREBASE_APP_ID],
-        "firebase_project_id": entry.data[CONF_FIREBASE_PROJECT_ID],
-        "firebase_package_name": entry.data[CONF_FIREBASE_PACKAGE_NAME],
+        "firebase_api_key": entry.data.get(CONF_FIREBASE_API_KEY, ""),
+        "firebase_sender_id": _sender_id,
+        "firebase_app_id": entry.data.get(CONF_FIREBASE_APP_ID, ""),
+        "firebase_project_id": entry.data.get(CONF_FIREBASE_PROJECT_ID, ""),
+        "firebase_package_name": entry.data.get(CONF_FIREBASE_PACKAGE_NAME, ""),
     }
 
     coordinators: list[FermaxBlueCoordinator] = []
@@ -121,9 +155,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
         )
         await coordinator.async_config_entry_first_refresh()
 
-        storage_path = Path(hass.config.config_dir) / ".storage" / DOMAIN
-        await asyncio.to_thread(storage_path.mkdir, parents=True, exist_ok=True)
-        await coordinator.setup_notifications(storage_path)
+        # Notifications (FCM) only if Firebase credentials were provided.
+        # A registration failure (e.g. the API key is restricted to the real
+        # app) must NOT take down the whole integration — camera/stream/door
+        # keep working, just without doorbell push events.
+        if firebase_config.get("firebase_api_key"):
+            try:
+                storage_path = Path(hass.config.config_dir) / ".storage" / DOMAIN
+                await asyncio.to_thread(storage_path.mkdir, parents=True, exist_ok=True)
+                await coordinator.setup_notifications(storage_path)
+            except Exception as err:
+                _LOGGER.error(
+                    "Failed to set up Fermax notifications (FCM). The "
+                    "integration keeps working without doorbell push events: %s",
+                    err,
+                )
 
         coordinators.append(coordinator)
 
@@ -340,6 +386,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) 
     """Unload a config entry."""
     coordinators = hass.data[DOMAIN].get(entry.entry_id, [])
     for coordinator in coordinators:
+        await coordinator.stop_stream()
         await coordinator.stop_notifications()
         await coordinator.api.close()
 

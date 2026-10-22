@@ -2,16 +2,16 @@
   "config": {
     "step": {
       "user": {
-        "title": "Fermax Blue Inloggen",
-        "description": "Voer uw Fermax Blue-inloggegevens in.",
+        "title": "Fermax Blue Anmeldung",
+        "description": "Geben Sie Ihre Fermax Blue-Anmeldedaten ein.",
         "data": {
-          "username": "E-mail",
-          "password": "Wachtwoord"
+          "username": "E-Mail",
+          "password": "Passwort"
         }
       },
       "credentials": {
-        "title": "API-referenties",
-        "description": "Voer de API- en Firebase-referenties in die uit uw Fermax Blue-app zijn geëxtraheerd. Zie de integratiedocumentatie voor instructies.",
+        "title": "API-Anmeldedaten",
+        "description": "Geben Sie die API- und Firebase-Anmeldedaten ein, die aus Ihrer Fermax Blue-App extrahiert wurden. Siehe die Integrationsdokumentation für Anweisungen.",
         "data": {
           "fermax_auth_url": "Fermax Auth URL",
           "fermax_base_url": "Fermax Base URL",
@@ -25,23 +25,22 @@
       }
     },
     "error": {
-      "invalid_auth": "Ongeldige inloggegevens. Controleer uw e-mail en wachtwoord.",
-      "invalid_url": "Fermax-URL's moeten geldige HTTPS-URL's zijn.",
-      "cannot_connect": "Kan geen verbinding maken met Fermax Blue servers.",
-      "no_devices": "Geen gekoppelde apparaten gevonden op dit account."
+      "invalid_auth": "Ungültige Anmeldedaten. Bitte E-Mail und Passwort prüfen.",
+      "invalid_url": "Fermax-URLs müssen gültige HTTPS-URLs sein.",
+      "no_devices": "Keine verknüpften Geräte in diesem Konto gefunden."
     },
     "abort": {
-      "already_configured": "Dit account is al geconfigureerd."
+      "already_configured": "Dieses Konto ist bereits konfiguriert."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Fermax Blue Opties",
+        "title": "Fermax Blue Optionen",
         "data": {
-          "scan_interval": "Polling-interval (minuten)",
-          "recording_retention": "Opnames bewaren (dagen)",
-          "auto_response_file": "Pad naar audiobestand"
+          "scan_interval": "Abfrageintervall (Minuten)",
+          "recording_retention": "Aufbewahrung der Aufnahmen (Tage)",
+          "auto_response_file": "Pfad zur Audiodatei"
         }
       }
     }
@@ -49,51 +48,51 @@
   "entity": {
     "number": {
       "stream_duration": {
-        "name": "Streamduur"
+        "name": "Stream-Dauer"
       }
     },
     "select": {
       "call_mode": {
-        "name": "Oproepstand",
+        "name": "Anrufmodus",
         "state": {
-          "notify_only": "Alleen melden",
-          "record": "Opnemen",
-          "auto_respond": "Automatisch antwoorden"
+          "notify_only": "Nur benachrichtigen",
+          "record": "Aufnehmen",
+          "auto_respond": "Automatisch antworten"
         }
       }
     },
     "binary_sensor": {
       "connection": {
-        "name": "Verbinding"
+        "name": "Verbindung"
       }
     },
     "event": {
       "doorbell": {
-        "name": "Deurbel",
+        "name": "Türklingel",
         "state_attributes": {
           "event_type": {
             "state": {
-              "ring": "Bel"
+              "ring": "Klingeln"
             }
           }
         }
       },
       "door_opened": {
-        "name": "Deur geopend",
+        "name": "Tür geöffnet",
         "state_attributes": {
           "event_type": {
             "state": {
-              "door_opened": "Deur geopend"
+              "door_opened": "Tür geöffnet"
             }
           }
         }
       },
       "camera_on": {
-        "name": "Camera voorbeeld",
+        "name": "Kameravorschau",
         "state_attributes": {
           "event_type": {
             "state": {
-              "camera_on": "Camera voorbeeld"
+              "camera_on": "Kameravorschau"
             }
           }
         }
@@ -101,51 +100,51 @@
     },
     "lock": {
       "door": {
-        "name": "Deur"
+        "name": "Tür"
       }
     },
     "camera": {
       "visitor": {
-        "name": "Bezoeker"
+        "name": "Besucher"
       }
     },
     "sensor": {
       "wifi_signal": {
-        "name": "WiFi-signaal"
+        "name": "WLAN-Signal"
       },
       "status": {
         "name": "Status"
       },
       "last_opening": {
-        "name": "Laatste opening"
+        "name": "Letzte Öffnung"
       },
       "last_call": {
-        "name": "Laatste oproep"
+        "name": "Letzter Anruf"
       }
     },
     "button": {
       "open_door": {
-        "name": "Deur openen"
+        "name": "Tür öffnen"
       },
       "camera_preview": {
-        "name": "Camera voorbeeld"
+        "name": "Kameravorschau"
       },
       "f1": {
-        "name": "F1 hulpknop"
+        "name": "F1 Hilfstaste"
       },
       "call_guard": {
-        "name": "Portier bellen"
+        "name": "Pförtner rufen"
       }
     },
     "switch": {
       "notifications": {
-        "name": "Deurbelmeldingen"
+        "name": "Klingelbenachrichtigungen"
       },
       "dnd": {
-        "name": "Niet storen"
+        "name": "Nicht stören"
       },
       "photo_caller": {
-        "name": "Bezoeker foto"
+        "name": "Besucherfoto"
       }
     }
   }
